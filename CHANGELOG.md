@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.0.1 (2026-11-06): security fixes (please update)
+
+- **Fixed:** other websites open in your browser could read the local agent's data (your open apps, window titles,
+  away status and saved location) because it allowed cross-origin requests. The agent now sends no CORS headers and
+  refuses any request that comes from another website.
+- Window titles are no longer included in the agent's `/status` data at all (they are only used inside the agent).
+- Added security headers (Content-Security-Policy, Cross-Origin-Resource-Policy, nosniff, no-referrer).
+- Settings values are validated (no NaN / out-of-range coordinates); oversized or malformed requests are rejected.
+- Idle or half-sent connections are dropped after 20 s, and live event streams are capped, so a misbehaving client
+  can't tie up the agent.
+
 ## v1.0.0 (2026-11-06): first release
 
 ### The town

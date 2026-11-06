@@ -1,5 +1,6 @@
 import ctypes
 import json
+import math
 import os
 import queue
 import re
@@ -245,7 +246,7 @@ def snapshot():
         return True
 
     user32.EnumWindows(enum_cb, 0)
-    grouped = defaultdict(lambda: {"id": "", "exe": "", "kind": "unknown", "role": "villager", "count": 0, "foreground": False, "ai_tools": set(), "titles_sample": []})
+    grouped = defaultdict(lambda: {"id": "", "exe": "", "kind": "unknown", "role": "villager", "count": 0, "foreground": False, "ai_tools": set()})  # window titles never leave this function
     for w in items:
         key = f'{w["exe"] or w["kind"]}|{w["role"]}'
         g = grouped[key]
@@ -260,8 +261,6 @@ def snapshot():
         g["foreground"] = g["foreground"] or w["foreground"]
         if w["ai_tool"]:
             g["ai_tools"].add(w["ai_tool"])
-        if len(g["titles_sample"]) < 2 and w["title"]:
-            g["titles_sample"].append(w["title"])
     apps = []
     for g in grouped.values():
         apps.append({**g, "ai_tools": sorted(g["ai_tools"])})
@@ -289,7 +288,6 @@ def snapshot():
         "foreground": fg_app,
         "idle_seconds": round(idle),
         "afk": away,
-        "windows": [{k: v for k, v in w.items() if k != "title"} for w in items],
     }
 
 
@@ -333,40 +331,75 @@ def save_config(update):
             cfg[k] = v.strip()[:80]
         elif k == "place" and isinstance(v, str):
             cfg[k] = v.strip()[:120]
-        elif k in ("lat", "lon") and (v is None or isinstance(v, (int, float))):
-            cfg[k] = None if v is None else round(float(v), 2)
-        elif k == "afk_minutes" and isinstance(v, (int, float)):
+        elif k in ("lat", "lon") and v is None:
+            cfg[k] = None
+        elif k in ("lat", "lon") and isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) \
+                and abs(v) <= (90 if k == "lat" else 180):
+            cfg[k] = round(float(v), 2)
+        elif k == "afk_minutes" and isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v):
             cfg[k] = max(1, min(120, int(v)))
     with _cfg_lock:
         CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
     return cfg
 
 
+def _reject_constant(name):
+    raise ValueError(f"{name} is not allowed")
+
+
+MAX_EVENT_CLIENTS = 8
+OWN_ORIGINS = {f"http://{HOST}:{PORT}", f"http://localhost:{PORT}"}
+# The town page only needs scripts/styles from itself, weather from Open-Meteo, and images from itself.
+CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+       "connect-src 'self' https://api.open-meteo.com https://geocoding-api.open-meteo.com; object-src 'none'; base-uri 'none'; "
+       "form-action 'none'")
+
+
 class Handler(BaseHTTPRequestHandler):
-    def _send(self, code, body, ctype="application/json", cors=True):
+    timeout = 20  # drop idle / half-sent connections instead of holding a thread forever
+
+    def _send(self, code, body, ctype="application/json", shareable=False):
+        """No CORS headers, ever: other websites open in your browser must not read your app list or location.
+        shareable=True only for /health, so the Lively launcher page (a local file) can see the agent is up."""
         raw = body if isinstance(body, bytes) else body.encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(raw)))
-        if cors:
-            self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        if not shareable:
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        if ctype.startswith("text/html"):
+            self.send_header("Content-Security-Policy", CSP)
         self.end_headers()
         self.wfile.write(raw)
 
     def _host_ok(self):
+        """Blocks DNS-rebinding (a website pointing its own domain at 127.0.0.1)."""
         return (self.headers.get("Host") or "") in (f"{HOST}:{PORT}", f"localhost:{PORT}")
+
+    def _cross_site(self):
+        """True when another website (or a local file) triggered this request from your browser."""
+        origin = self.headers.get("Origin")
+        if origin is not None and origin not in OWN_ORIGINS:
+            return True
+        return (self.headers.get("Sec-Fetch-Site") or "same-origin") not in ("same-origin", "none")
 
     def do_GET(self):
         if not self._host_ok():
             return self._send(403, '{"error":"forbidden"}')
         path = urlparse(self.path).path
+        if path == "/health":
+            return self._send(200, '{"ok":true,"app":"desktop-buddy"}', shareable=True)
+        # Opening the page itself is fine from anywhere (e.g. the Lively launcher redirects here): a navigation can't be
+        # read back by the site that started it. Everything else (data, scripts, images) must come from our own page.
+        if self._cross_site() and not (self.headers.get("Sec-Fetch-Mode") == "navigate" and path not in ("/status", "/config", "/events")):
+            return self._send(403, '{"error":"forbidden"}')
         if path == "/status":
             with lock:
                 payload = json.dumps(state)
             return self._send(200, payload)
-        if path == "/health":
-            return self._send(200, '{"ok":true,"app":"desktop-buddy"}')
         if path == "/config":
             return self._send(200, json.dumps(load_config()))
         if path == "/events":
@@ -375,14 +408,17 @@ class Handler(BaseHTTPRequestHandler):
             return self._wallpaper_image()
         rel = unquote(path).lstrip("/") or "index.html"
         target = (WEB_DIR / rel).resolve()
-        if WEB_DIR not in target.parents or not target.is_file():
-            return self._send(404, '{"error":"not found"}', cors=False)
-        self._send(200, target.read_bytes(), MIME.get(target.suffix.lower(), "application/octet-stream"), cors=False)
+        if WEB_DIR not in target.parents or not target.is_file() or target.suffix.lower() not in MIME:
+            return self._send(404, '{"error":"not found"}')
+        self._send(200, target.read_bytes(), MIME[target.suffix.lower()])
 
     def _stream(self):
         q = queue.Queue()
         with _ev_lock:
+            if len(EVENT_CLIENTS) >= MAX_EVENT_CLIENTS:
+                return self._send(503, '{"error":"busy"}')
             EVENT_CLIENTS.append(q)
+        self.connection.settimeout(None)  # long-lived stream: only the write side matters here
         try:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -411,29 +447,36 @@ class Handler(BaseHTTPRequestHandler):
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Control Panel\Desktop") as k:
                 p = Path(winreg.QueryValueEx(k, "WallPaper")[0])
             mime = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".bmp": "image/bmp", ".webp": "image/webp"}.get(p.suffix.lower())
-            if mime and p.is_file():
-                return self._send(200, p.read_bytes(), mime, cors=False)
+            if mime and p.is_file() and p.stat().st_size <= 64 * 1024 * 1024:
+                return self._send(200, p.read_bytes(), mime)
         except Exception:
             pass
-        self._send(404, '{"error":"none"}', cors=False)
+        self._send(404, '{"error":"none"}')
 
     def do_POST(self):
-        # JSON content-type is required: browsers cannot send it cross-origin without a preflight, which we never allow.
-        if not self._host_ok() or not (self.headers.get("Content-Type") or "").startswith("application/json"):
-            return self._send(403, '{"error":"forbidden"}', cors=False)
+        # JSON content-type is required (browsers cannot send it cross-origin without a preflight, which we never allow),
+        # and requests coming from any other website are refused outright.
+        if not self._host_ok() or self._cross_site() or \
+                not (self.headers.get("Content-Type") or "").startswith("application/json"):
+            return self._send(403, '{"error":"forbidden"}')
         path = urlparse(self.path).path
         try:
-            length = min(int(self.headers.get("Content-Length") or 0), 4096)
-            body = json.loads(self.rfile.read(length) or b"{}")
+            length = int(self.headers.get("Content-Length") or 0)
+            if length < 0 or length > 4096:
+                return self._send(413, '{"error":"too large"}')
+            body = json.loads(self.rfile.read(length) or b"{}", parse_constant=_reject_constant)  # no NaN / Infinity
         except Exception:
-            return self._send(400, '{"error":"bad json"}', cors=False)
+            return self._send(400, '{"error":"bad json"}')
         if path == "/config" and isinstance(body, dict):
-            return self._send(200, json.dumps(save_config(body)), cors=False)
+            return self._send(200, json.dumps(save_config(body)))
         if path == "/quit":
-            self._send(200, '{"ok":true}', cors=False)
+            self._send(200, '{"ok":true}')
             quit_event.set()
             return
-        self._send(404, '{"error":"not found"}', cors=False)
+        self._send(404, '{"error":"not found"}')
+
+    def do_OPTIONS(self):  # never approve a cross-origin preflight
+        self._send(403, '{"error":"forbidden"}')
 
     def log_message(self, *_):
         return
