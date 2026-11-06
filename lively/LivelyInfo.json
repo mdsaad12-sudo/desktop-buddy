@@ -1,0 +1,14 @@
+{
+  "AppVersion": "1.0.0.0",
+  "Title": "Desktop Buddy",
+  "Desc": "Live pixel hometown that mirrors what you do on your PC.",
+  "Author": "Desktop Buddy",
+  "License": "",
+  "Contact": "",
+  "Type": 1,
+  "FileName": "index.html",
+  "Preview": null,
+  "Thumbnail": "thumbnail.png",
+  "Arguments": null,
+  "IsAbsolutePath": false
+}

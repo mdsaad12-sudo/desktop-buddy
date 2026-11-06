@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Desktop Buddy Wallpaper</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="preload" href="/wallpaper-image" as="image">
+<style>
+  /* Your normal wallpaper shows first; the town fades in over it → no blank/black frame on startup */
+  html,body{margin:0;height:100%;overflow:hidden;cursor:default;user-select:none;
+    background:#1b2a3a url(/wallpaper-image) center/cover no-repeat}
+  canvas{display:block;opacity:0;transition:opacity 1.6s ease}
+  canvas.ready{opacity:1}
+  #card{position:fixed;left:0;top:0;display:block;opacity:0;pointer-events:none;transition:opacity .2s;
+    min-width:190px;max-width:290px;padding:10px 13px 11px;border-radius:6px;
+    background:rgba(26,20,32,.93);color:#f6ecd6;border:2px solid #e3b341;box-shadow:0 4px 0 rgba(0,0,0,.35),0 0 0 2px #231a2a;
+    font:13px/1.5 "Segoe UI",system-ui,sans-serif}
+  #card.on{opacity:1}
+  #card .nm{font-size:15px;font-weight:700}
+  #card .job{color:#e3b341;font-weight:600;margin-left:6px}
+  #card .app{margin-top:3px}
+  #card .row{color:#cfc4ad}
+  #card .on-dot{color:#7ee081;font-weight:600}
+  #card .bg-dot{color:#9fb2c9;font-weight:600}
+  #card .free{color:#cfc4ad;font-style:italic}
+  #card b{color:#fff}
+</style>
+</head>
+<body data-mode="wallpaper">
+<canvas id="view" data-fit="cover"></canvas>
+<div id="card"></div>
+<script src="town.js"></script>
+<script>
+townBoot();
+
+/* ---------- fade in once the first frame is drawn ---------- */
+let shown=false;
+window.onTownFrame=()=>{if(!shown){shown=true;requestAnimationFrame(()=>view.classList.add('ready'));}updateCard();};
+
+/* ---------- click a resident or cat → info card ---------- */
+const card=document.getElementById('card');
+let cardFor=null,cardUntil=0;
+function dur(s){s=Math.max(0,Math.floor(s));const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
+  return d?`${d}d ${h}h`:h?`${h}h ${m}m`:m?`${m}m`:`${s}s`;}
+function cardHTML(o){
+  if(o.pal)return `<div><span class="nm">🐈 ${esc(o.name)}</span><span class="job">Town cat</span></div><div class="row">${esc(o.kind)} · ${esc(petLabel(o))}</div>`;
+  const now=Date.now()/1000,a=o.app;
+  let h=`<div><span class="nm">${esc(o.name)}</span><span class="job">${esc(jobLabel(o))}</span></div>`;
+  if(!a)return h+`<div class="free">${esc(stateLabel(o))} · no app (free time)</div>`;
+  const items=a.list||[a];
+  if(afk)h+=`<div class="bg-dot">◌ Napping while you're away</div>`;
+  if(items.length>1)h+=`<div class="row">Handling ${items.length} apps:</div>`;
+  for(const it of items){
+    const tot=(it.focusTotal||0)+(it.focusSince?now-it.focusSince:0);
+    h+=`<div class="app">${items.length>1?'• ':'App: '}<b>${esc(it.name)}</b>${it.ai?` <span class="row">(${esc(it.ai)})</span>`:''}${it.count>1?` <span class="row">· ${it.count} windows</span>`:''}</div>`;
+    if(!afk)h+=it.focusSince?`<div><span class="on-dot">● Working now</span> for <b>${dur(now-it.focusSince)}</b></div>`:`<div><span class="bg-dot">○ Open in the background</span></div>`;
+    h+=`<div class="row">${it.opened?`Running for <b>${dur(now-it.opened)}</b>`:''}${tot>=1?` · in focus <b>${dur(tot)}</b>`:''}</div>`;
+  }
+  return h;
+}
+function showCard(o){
+  if(!o){hideCard();return;}
+  cardFor=o;selected=o;cardUntil=performance.now()+12000;card.classList.add('on');updateCard();
+}
+function hideCard(){cardFor=null;selected=null;card.classList.remove('on');}
+let lastHTML='';
+function updateCard(){
+  if(!cardFor)return;
+  if(performance.now()>cardUntil||cardFor.hidden){hideCard();return;}
+  const html=cardHTML(cardFor);if(html!==lastHTML){card.innerHTML=html;lastHTML=html;}
+  const dpr=window.devicePixelRatio||1,s=BLIT.s/dpr;
+  const x=(cardFor.x*BLIT.s+BLIT.ox)/dpr,y=(cardFor.y*BLIT.s+BLIT.oy)/dpr;
+  const w=card.offsetWidth,h=card.offsetHeight,head=(cardFor.pal?12:26)*s;
+  let left=x+14*s,top=y-head-h;
+  if(left+w>innerWidth-12)left=x-14*s-w;
+  left=Math.max(12,left);top=Math.max(12,Math.min(innerHeight-h-64,top)); // keep clear of the taskbar
+  card.style.transform=`translate(${Math.round(left)}px,${Math.round(top)}px)`;
+}
+// desktop clicks forwarded by the agent (the icon layer sits above the wallpaper)
+function connectEvents(){
+  const es=new EventSource('/events');
+  es.onmessage=e=>{try{const d=JSON.parse(e.data);if(d.type==='click')showCard(pickAt(d.x,d.y));}catch(_){}};
+  es.onerror=()=>{es.close();setTimeout(connectEvents,3000);};
+}
+connectEvents();
+// direct clicks (when previewing in a normal browser tab)
+window.onTownClick=hit=>showCard(hit||petHit());
+</script>
+</body>
+</html>

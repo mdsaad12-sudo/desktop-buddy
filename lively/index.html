@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Desktop Buddy</title>
+<style>
+  html,body{margin:0;height:100%;background:#1b2a3a;color:#cfc4ad;font:15px "Segoe UI",system-ui,sans-serif;
+    display:flex;align-items:center;justify-content:center;user-select:none}
+</style>
+</head>
+<body>
+<div id="msg">Waking up the town…</div>
+<script>
+/* Lively launcher: waits until the Desktop Buddy agent is up, then opens the town it serves. */
+const TOWN='http://127.0.0.1:8770/';
+async function go(){
+  try{
+    await fetch(TOWN+'health',{mode:'no-cors',cache:'no-store'});   // resolves only if the agent answers
+    location.replace(TOWN);
+  }catch(e){
+    document.getElementById('msg').textContent='Waiting for the Desktop Buddy agent… (start_lively.bat)';
+    setTimeout(go,3000);
+  }
+}
+go();
+</script>
+</body>
+</html>

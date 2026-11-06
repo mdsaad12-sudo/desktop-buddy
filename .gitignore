@@ -1,0 +1,5 @@
+# personal / generated files: never commit
+agent/config.json
+*.log
+__pycache__/
+*.pyc

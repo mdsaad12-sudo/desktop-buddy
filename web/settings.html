@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Desktop Buddy Settings</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body{margin:0;font:15px/1.5 "Segoe UI",system-ui,sans-serif;background:#1d1a24;color:#f2ead8;display:flex;justify-content:center}
+  main{width:min(560px,92vw);margin:48px 0}
+  h1{font-size:22px;margin:0 0 4px}
+  .sub{color:#b9ad96;margin:0 0 24px}
+  .card{background:#2a2533;border:1px solid #3d3548;border-radius:10px;padding:18px;margin-bottom:16px}
+  label{display:block;font-weight:600;margin-bottom:6px}
+  .row{display:flex;gap:8px}
+  input{flex:1;padding:9px 11px;border-radius:7px;border:1px solid #4a4256;background:#17141d;color:#f2ead8;font:inherit}
+  input[type=number]{flex:0 0 90px}
+  button{padding:9px 14px;border-radius:7px;border:0;background:#c63b2c;color:#fff;font:inherit;font-weight:600;cursor:pointer}
+  button.alt{background:#3d3548}
+  .msg{margin-top:10px;color:#a3d95b;min-height:1.5em}
+  .msg.err{color:#ff8a7a}
+  code{background:#17141d;padding:1px 5px;border-radius:4px}
+  a{color:#ffd166}
+</style>
+</head>
+<body>
+<main>
+  <h1>⛩ Desktop Buddy settings</h1>
+  <p class="sub">Changes reach the live wallpaper within a minute.</p>
+
+  <div class="card">
+    <label for="city">Your city (for real weather, sunrise and sunset)</label>
+    <div class="row"><input id="city" placeholder="e.g. London"><button id="save">Save</button></div>
+    <div class="row" style="margin-top:8px"><button class="alt" id="geo">Use my current location instead</button></div>
+    <div class="msg" id="msg"></div>
+    <p class="sub" style="margin:8px 0 0">The location is rounded and sent only to Open-Meteo (free weather service) to get the forecast.</p>
+  </div>
+
+  <div class="card">
+    <label for="afk">Residents go to sleep after you've been away for</label>
+    <div class="row" style="align-items:center"><input id="afk" type="number" min="1" max="120"> <span>minutes</span><button class="alt" id="saveAfk" style="margin-left:auto">Save</button></div>
+    <div class="msg" id="msg2"></div>
+  </div>
+
+  <div class="card">
+    <label>Preview</label>
+    <a href="/" target="_blank">Open the wallpaper in a browser tab</a>
+  </div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+function show(el,text,err){el.textContent=text;el.className='msg'+(err?' err':'');}
+async function post(body){
+  const r=await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!r.ok)throw new Error('save failed');return r.json();
+}
+async function load(){
+  const c=await (await fetch('/config',{cache:'no-store'})).json();
+  $('city').value=c.city||'';$('afk').value=c.afk_minutes||5;
+  if(c.place)show($('msg'),'Current location: '+c.place);
+}
+$('save').onclick=async()=>{
+  const name=$('city').value.trim();if(!name)return;
+  show($('msg'),'Looking up '+name+'…');
+  try{
+    const j=await (await fetch('https://geocoding-api.open-meteo.com/v1/search?count=1&name='+encodeURIComponent(name))).json();
+    const r=j.results&&j.results[0];if(!r)return show($('msg'),'City not found. Try another spelling.',1);
+    const place=r.name+(r.admin1?', '+r.admin1:'')+(r.country_code?', '+r.country_code:'');
+    await post({city:name,lat:+r.latitude.toFixed(2),lon:+r.longitude.toFixed(2),place});
+    show($('msg'),'Saved: '+place);
+  }catch(e){show($('msg'),'Could not save. Is Desktop Buddy running?',1);}
+};
+$('city').addEventListener('keydown',e=>{if(e.key==='Enter')$('save').click();});
+$('geo').onclick=()=>{
+  if(!navigator.geolocation)return show($('msg'),'Location not available in this browser.',1);
+  show($('msg'),'Asking the browser for your location…');
+  navigator.geolocation.getCurrentPosition(async p=>{
+    try{await post({city:'',lat:+p.coords.latitude.toFixed(2),lon:+p.coords.longitude.toFixed(2),place:'Your location'});show($('msg'),'Saved your current location.');}
+    catch(e){show($('msg'),'Could not save. Is Desktop Buddy running?',1);}
+  },()=>show($('msg'),'Location permission was denied. Type your city instead.',1),{timeout:15000});
+};
+$('saveAfk').onclick=async()=>{
+  const v=Math.max(1,Math.min(120,Math.round(+$('afk').value||5)));
+  try{await post({afk_minutes:v});show($('msg2'),'Saved: '+v+' min');}catch(e){show($('msg2'),'Could not save.',1);}
+};
+load().catch(()=>show($('msg'),'Desktop Buddy agent is not running.',1));
+</script>
+</body>
+</html>
